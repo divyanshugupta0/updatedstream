@@ -289,183 +289,259 @@
 
     <script>
         let peer;
-        let stream;
-        let connections = new Set();
-        let isStreaming = false;
-        let audioElement = null;
-        
-        const startStreamBtn = document.getElementById('startStream');
-        const shareLinkBtn = document.getElementById('shareLink');
-        const userList = document.getElementById('userList');
-        const statusIndicator = document.getElementById('statusIndicator');
-        const statusText = document.getElementById('statusText');
-        const statusContainer = document.getElementById('statusContainer');
-        const notification = document.getElementById('notification');
-        const listenerControls = document.getElementById('listenerControls');
-        const startListeningBtn = document.getElementById('startListening');
+    let stream;
+    let connections = new Set();
+    let isStreaming = false;
+    let audioElement = null;
+    
+    // DOM Elements
+    const startStreamBtn = document.getElementById('startStream');
+    const shareLinkBtn = document.getElementById('shareLink');
+    const userList = document.getElementById('userList');
+    const statusIndicator = document.getElementById('statusIndicator');
+    const statusText = document.getElementById('statusText');
+    const statusContainer = document.getElementById('statusContainer');
+    const notification = document.getElementById('notification');
+    const listenerControls = document.getElementById('listenerControls');
+    const startListeningBtn = document.getElementById('startListening');
 
-        function initPeer() {
-            peer = new Peer({
-                config: {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' }
-                    ]
-                },
-                debug: 2
-            });
+    // Utility Functions
+    function showNotification(message) {
+        notification.textContent = message;
+        notification.style.display = 'block';
+        setTimeout(() => {
+            notification.style.display = 'none';
+        }, 3000);
+    }
+
+    function updateStreamingUI(isStreaming) {
+        startStreamBtn.textContent = isStreaming ? 'Stop Stream' : 'Start System Audio Stream';
+        startStreamBtn.classList.toggle('btn-stop', isStreaming);
+        statusIndicator.classList.toggle('active', isStreaming);
+        statusContainer.classList.toggle('streaming', isStreaming);
+        statusText.textContent = isStreaming ? 'Streaming' : 'Not Streaming';
+    }
+
+    function handlePeerError(error) {
+        console.error('Peer error:', error);
+        showNotification('Connection error: ' + error.type);
+        if (error.type === 'disconnected') {
+            reconnectPeer();
+        }
+    }
+
+    function handleCallError(err) {
+        console.error('Call error:', err);
+        showNotification('Call failed: ' + err.message);
+    }
+
+    function handleStreamError(err) {
+        console.error('Streaming error:', err);
+        showNotification('Error: ' + (err.message || 'Failed to start stream'));
+        stopStreaming();
+    }
+
+    function updateUserList() {
+        userList.innerHTML = '';
+        connections.forEach(conn => {
+            const li = document.createElement('li');
+            li.className = 'user-item';
+            li.innerHTML = `
+                <span>User ${conn.peer.slice(0, 6)}...</span>
+                <button class="btn-disconnect" onclick="disconnectUser('${conn.peer}')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"></path>
+                    </svg>
+                </button>
+            `;
+            userList.appendChild(li);
+        });
+    }
+
+    function disconnectUser(peerId) {
+        connections.forEach(conn => {
+            if (conn.peer === peerId) {
+                conn.close();
+                connections.delete(conn);
+            }
+        });
+        updateUserList();
+        showNotification('User disconnected');
+    }
+
+    // Core Functionality
+    function initPeer() {
+        peer = new Peer({
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            },
+            debug: 2
+        });
+        
+        peer.on('open', id => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const hostId = urlParams.get('host');
             
-            peer.on('open', id => {
-                const urlParams = new URLSearchParams(window.location.search);
-                const hostId = urlParams.get('host');
-                
-                if (hostId && hostId !== id) {
-                    connectToHost(hostId);
-                }
-            });
-        
-            peer.on('error', handlePeerError);
-            peer.on('connection', handleNewConnection);
-            peer.on('call', handleIncomingCall);
-        }
-
-        async function startStreaming() {
-            try {
-                if (isStreaming) {
-                    stopStreaming();
-                    return;
-                }
-
-                // First try to get system audio with screen capture
-                stream = await navigator.mediaDevices.getDisplayMedia({
-                    audio: {
-                        echoCancellation: false,
-                        noiseSuppression: false,
-                        autoGainControl: false,
-                        deviceId: 'default'
-                    },
-                    video: {
-                        width: { ideal: 1 },
-                        height: { ideal: 1 }
-                    }
-                });
-
-                // Check if we got an audio track
-                if (!stream.getAudioTracks().length) {
-                    throw new Error('Please select a window/tab and enable system audio sharing');
-                }
-
-                // Share the stream with all connected peers
-                connections.forEach(conn => {
-                    const call = peer.call(conn.peer, stream);
-                    call.on('error', handleCallError);
-                });
-
-                stream.getAudioTracks()[0].onended = handleStreamEnd;
-                isStreaming = true;
-                updateStreamingUI(true);
-                showNotification('System audio stream started');
-
-            } catch (err) {
-                handleStreamError(err);
+            if (hostId && hostId !== id) {
+                connectToHost(hostId);
             }
-        }
-        
-        function stopStreaming() {
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-                stream = null;
-            }
-            isStreaming = false;
-            updateStreamingUI(false);
-        }
-
-        function handleStreamEnd() {
-            stopStreaming();
-            showNotification('Stream ended');
-        }
-
-        function handleStreamError(err) {
-            console.error('Streaming error:', err);
-            showNotification('Error: ' + (err.message || 'Failed to start stream'));
-            stopStreaming();
-        }
-
-        function handleIncomingCall(call) {
-            call.answer();
-            call.on('stream', remoteStream => {
-                setupAudioPlayback(remoteStream);
-            });
-        }
-
-        function setupAudioPlayback(remoteStream) {
-            // Clean up existing audio element if it exists
-            if (audioElement) {
-                audioElement.srcObject = null;
-                audioElement.remove();
-            }
-
-            // Create new audio element
-            audioElement = new Audio();
-            audioElement.srcObject = remoteStream;
-
-            // Show listener controls
-            listenerControls.style.display = 'block';
-            startListeningBtn.onclick = () => {
-                audioElement.play()
-                    .then(() => {
-                        showNotification('Playback started');
-                        listenerControls.style.display = 'none';
-                    })
-                    .catch(err => {
-                        console.error('Playback error:', err);
-                        showNotification('Failed to start playback. Please try again.');
-                    });
-            };
-        }
-
-        function connectToHost(hostId) {
-            const conn = peer.connect(hostId);
-            conn.on('open', () => {
-                // Hide host controls for listeners
-                startStreamBtn.style.display = 'none';
-                shareLinkBtn.style.display = 'none';
-                statusContainer.style.display = 'none';
-                showNotification('Connected to host');
-            });
-        
-            conn.on('error', (err) => {
-                console.error('Host connection error:', err);
-                showNotification('Failed to connect to host');
-            });
-        }
-
-        // ... (rest of the utility functions remain the same: updateUserList, disconnectUser, showNotification, etc.)
-
-        // Event Listeners
-        startStreamBtn.addEventListener('click', startStreaming);
-        
-        shareLinkBtn.addEventListener('click', () => {
-            const url = `${window.location.origin}${window.location.pathname}?host=${peer.id}`;
-            navigator.clipboard.writeText(url).then(() => {
-                showNotification('Share link copied to clipboard');
-            }).catch(err => {
-                console.error('Failed to copy link:', err);
-                showNotification('Failed to copy link');
-            });
         });
-        
-        // Initialize on page load
-        window.addEventListener('load', () => {
+    
+        peer.on('error', handlePeerError);
+        peer.on('connection', handleNewConnection);
+        peer.on('call', handleIncomingCall);
+    }
+
+    function reconnectPeer() {
+        if (peer && !peer.destroyed) {
+            peer.reconnect();
+        } else {
             initPeer();
-        });
+        }
+    }
+
+    function handleNewConnection(conn) {
+        connections.add(conn);
+        updateUserList();
+        showNotification('New user connected');
         
-        // Handle page visibility changes
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden && stream) {
-                stopStreaming();
-            }
+        if (stream) {
+            const call = peer.call(conn.peer, stream);
+            call.on('error', handleCallError);
+        }
+        
+        conn.on('close', () => {
+            connections.delete(conn);
+            updateUserList();
+            showNotification('User disconnected');
         });
-    </script>
+    }
+
+    function handleIncomingCall(call) {
+        call.answer();
+        call.on('stream', remoteStream => {
+            setupAudioPlayback(remoteStream);
+        });
+    }
+
+    function setupAudioPlayback(remoteStream) {
+        if (audioElement) {
+            audioElement.srcObject = null;
+            audioElement.remove();
+        }
+
+        audioElement = new Audio();
+        audioElement.srcObject = remoteStream;
+
+        listenerControls.style.display = 'block';
+        startListeningBtn.onclick = () => {
+            audioElement.play()
+                .then(() => {
+                    showNotification('Playback started');
+                    listenerControls.style.display = 'none';
+                })
+                .catch(err => {
+                    console.error('Playback error:', err);
+                    showNotification('Failed to start playback. Please try again.');
+                });
+        };
+    }
+
+    async function startStreaming() {
+        try {
+            if (isStreaming) {
+                stopStreaming();
+                return;
+            }
+
+            stream = await navigator.mediaDevices.getDisplayMedia({
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false,
+                    deviceId: 'default'
+                },
+                video: {
+                    width: { ideal: 1 },
+                    height: { ideal: 1 }
+                }
+            });
+
+            if (!stream.getAudioTracks().length) {
+                throw new Error('Please select a window/tab and enable system audio sharing');
+            }
+
+            connections.forEach(conn => {
+                const call = peer.call(conn.peer, stream);
+                call.on('error', handleCallError);
+            });
+
+            stream.getAudioTracks()[0].onended = handleStreamEnd;
+            isStreaming = true;
+            updateStreamingUI(true);
+            showNotification('System audio stream started');
+
+        } catch (err) {
+            handleStreamError(err);
+        }
+    }
+
+    function stopStreaming() {
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+        }
+        isStreaming = false;
+        updateStreamingUI(false);
+    }
+
+    function handleStreamEnd() {
+        stopStreaming();
+        showNotification('Stream ended');
+    }
+
+    function connectToHost(hostId) {
+        const conn = peer.connect(hostId);
+        conn.on('open', () => {
+            startStreamBtn.style.display = 'none';
+            shareLinkBtn.style.display = 'none';
+            statusContainer.style.display = 'none';
+            showNotification('Connected to host');
+        });
+    
+        conn.on('error', (err) => {
+            console.error('Host connection error:', err);
+            showNotification('Failed to connect to host');
+        });
+    }
+
+    // Event Listeners
+    startStreamBtn.addEventListener('click', startStreaming);
+    
+    shareLinkBtn.addEventListener('click', () => {
+        const url = `${window.location.origin}${window.location.pathname}?host=${peer.id}`;
+        navigator.clipboard.writeText(url).then(() => {
+            showNotification('Share link copied to clipboard');
+        }).catch(err => {
+            console.error('Failed to copy link:', err);
+            showNotification('Failed to copy link');
+        });
+    });
+    
+    // Initialize on page load
+    window.addEventListener('load', () => {
+        initPeer();
+    });
+    
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && stream) {
+            stopStreaming();
+        }
+    });
+</script>
 </body>
 </html>
