@@ -536,12 +536,6 @@
         initPeer();
     });
     
-    // Handle page visibility changes
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden && stream) {
-            stopStreaming();
-        }
-    });
 </script>
 </body>
 </html>
